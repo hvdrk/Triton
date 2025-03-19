@@ -6,9 +6,9 @@ Triton for PCIe
 
 Please check following documents
 
-
- * [Setup Guide](./docs/BuildGuide.pdf)
  * [Changes](./docs/PCIe.pdf)
+ * [Build Guide](./docs/BuildGuide.pdf)
+
 
 
 
