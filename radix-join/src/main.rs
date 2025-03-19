@@ -56,13 +56,19 @@ fn main() -> Result<()> {
         Context::create_and_push(ContextFlags::MAP_HOST | ContextFlags::SCHED_AUTO, device)?;
 
     let cache_node = device.numa_node().ok();
+    // println!("cache_node is {:?}", cache_node);
     let overflow_node = match device.numa_memory_affinity() {
-        Ok(numa_node) => numa_node,
+        Ok(numa_node) => {
+            // println!("@@@ NUMA OK");
+            numa_node
+        },
         Err(e) => {
             eprintln!("Warning: {}; Falling back to node = 0", e);
             0
         }
     };
+    // println!("overflow_node is {:?}", overflow_node);
+
 
     cmd.set_state_mem(cache_node);
     cmd.set_partitions_mem(cache_node, overflow_node)?;
@@ -361,25 +367,32 @@ impl CmdOpt {
         overflow_location: u16,
     ) -> Result<()> {
         if self.execution_method == ArgExecutionMethod::GpuTritonJoinTwoPass {
-            let cache_location = cache_location.ok_or_else(|| {
-                ErrorKind::RuntimeError(
-                    "Failed to set the cache NUMA location. Are you using PCI-e?".to_string(),
-                )
-            })?;
-
-            if ArgMemType::DistributedNuma != self.partitions_mem_type {
-                self.partitions_mem_type = ArgMemType::DistributedNuma;
-                self.partitions_location = vec![cache_location, overflow_location];
+            if cache_location != None {
+                let cache_location = cache_location.ok_or_else(|| {
+                    ErrorKind::RuntimeError(
+                        "Failed to set the cache NUMA location. Are you using PCI-e?".to_string(),
+                    )
+                })?;
+    
+                if ArgMemType::DistributedNuma != self.partitions_mem_type {
+                    self.partitions_mem_type = ArgMemType::DistributedNuma;
+                    self.partitions_location = vec![cache_location, overflow_location];
+                    self.partitions_proportions = vec![0, 0];
+                } else if self.partitions_location.len() != 2 {
+                    let e = format!(
+                        "Invalid argument: --partitions-location must specify \
+                        exactly two locations when combined with --execution-method \
+                        GpuTritonJoin\n\
+                        The default locations are: --partitions-location {},{}",
+                        cache_location, overflow_location
+                    );
+                    Err(ErrorKind::InvalidArgument(e))?;
+                }
+            }
+            else {
+                self.partitions_mem_type = ArgMemType::NumaPinned;
+                self.partitions_location = vec![0, 0];
                 self.partitions_proportions = vec![0, 0];
-            } else if self.partitions_location.len() != 2 {
-                let e = format!(
-                    "Invalid argument: --partitions-location must specify \
-                    exactly two locations when combined with --execution-method \
-                    GpuTritonJoin\n\
-                    The default locations are: --partitions-location {},{}",
-                    cache_location, overflow_location
-                );
-                Err(ErrorKind::InvalidArgument(e))?;
             }
         }
 
@@ -779,7 +792,7 @@ impl CmdOptToDataPoint for DataPoint {
                 vec![cpu_codename()?, device.name()?]
             }
         };
-
+        println!("@@@@@@@@ Some(cmd.partitions_mem_type) is {:?}",Some(cmd.partitions_mem_type));
         let dp = DataPoint {
             data_set: Some(cmd.data_set.to_string()),
             histogram_algorithm: Some(cmd.histogram_algorithm),

@@ -40,8 +40,11 @@ use sql_ops::partition::gpu_radix_partition::{
 };
 use sql_ops::partition::{
     PartitionOffsets, PartitionedRelation, RadixBits, RadixPartitionInputChunkable, RadixPass,
-    Tuple,
+    Tuple, fanout, HistogramAlgorithmType,
 };
+use sql_ops::partition::partitioned_relation::padding_len;
+use cust::memory::mem_get_info;
+
 use std::cmp;
 use std::convert::TryInto;
 use std::iter;
@@ -145,7 +148,7 @@ where
     let stream = Stream::new(StreamFlags::NON_BLOCKING, None)?;
 
     let (cache_node, spill_node) =
-        if let MemType::DistributedNumaMem { nodes, .. } = partitions_mem_type {
+        if let MemType::DistributedNumaMem { nodes, .. } = partitions_mem_type.clone() {
             if let [cache_node, spill_node] = *nodes {
                 Ok((cache_node.node, spill_node.node))
             } else {
@@ -154,10 +157,9 @@ where
                 ))
             }
         } else {
-            Err(ErrorKind::InvalidArgument(
-                "Partitioned memory type must be DistributedNumaMem".to_string(),
-            ))
+            Ok((0,0))
         }?;
+
 
     let boxed_cpu_affinity = Arc::new(cpu_affinity);
     let thread_pool = rayon::ThreadPoolBuilder::new()
@@ -180,9 +182,12 @@ where
     let max_chunks_2nd = stream_grid_size.x;
     let join_result_sums_len = (stream_grid_size.x * stream_block_size.x) as usize;
 
-    let offsets_mem_type = MemType::NumaMem {
-        node: spill_node,
-        page_type,
+    let offsets_mem_type = match partitions_mem_type {
+        MemType::DistributedNumaMem {..} => MemType::NumaMem {
+            node: spill_node,
+            page_type,
+        },
+        _ => partitions_mem_type.clone()
     };
 
     let mut radix_prnr = GpuRadixPartitioner::new(
@@ -411,32 +416,99 @@ where
         }
         cmp::min(bytes, free)
     });
+
+    
+    // get device's free memory - for PCIe
+    let free_mem = if let Ok((free_mem, _)) = mem_get_info() {
+        free_mem - GPU_MEM_SLACK_BYTES
+    } else {
+        0
+    };
+
+
     let cache_proportion_inner = data.build_relation_key.len() as f64
         / (data.build_relation_key.len() as f64 + data.probe_relation_key.len() as f64);
     let cache_bytes_inner = (cache_bytes as f64 * cache_proportion_inner) as usize;
     let cache_bytes_outer = cache_bytes - cache_bytes_inner;
 
-    let (inner_rel_alloc, cached_build_tuples) =
-        Allocator::mem_spill_alloc_fn(CacheSpillType::CacheAndSpill {
+    // compute 1st partitioned relation's total size
+    let padding_len = padding_len::<Tuple<T, T>>();
+    let chunks: u32 = match histogram_algorithm_fst.either(|cpu| cpu.into(), |gpu| gpu.into()) {
+        HistogramAlgorithmType::Chunked => max_chunks_1st,
+        HistogramAlgorithmType::Contiguous => 1,
+    };
+    let num_partitions = fanout(radix_bits.pass_radix_bits(RadixPass::First).unwrap()) as usize;
+    let inner_relation_len = data.build_relation_key.len() + (num_partitions * chunks as usize) * padding_len as usize;
+    let inner_relation_size = inner_relation_len * (mem::size_of::<Tuple<T, T>>() as usize);
+    let outer_relation_len = data.probe_relation_key.len() + (num_partitions * chunks as usize) * padding_len as usize;
+    let outer_relation_size = outer_relation_len * (mem::size_of::<Tuple<T, T>>() as usize);
+    let total_relation_size = inner_relation_size + outer_relation_size;
+
+
+    let partitions_mem_type_revised = match partitions_mem_type {
+        MemType::DistributedNumaMem {..} => partitions_mem_type.clone(),
+        _ => {
+            if free_mem > total_relation_size {
+                println!("@@@ can use Devmem");
+                MemType::CudaDevMem
+            } else {
+                println!("@@@ can not use Devmem");
+                partitions_mem_type.clone()
+            }
+        }
+    };
+
+    // let partitions_mem_type_revised = MemType::CudaUniMem;
+
+    // if device's free memory is larger then total_relation_size, use device's memory
+    println!("@@@ (free_mem, total_relation_size) [GB] is {:?})",(free_mem>>30, total_relation_size>>30));
+    println!("@@@ free_mem/total_relation_size is {:?})", free_mem/total_relation_size);
+    println!("@@@ total_relation_size/free_mem is {:?})", total_relation_size/free_mem);
+
+
+    // if free_mem > total_relation_size {
+    //     partitions_mem_type = MemType::CudaDevMem;
+    //     println!("@@@ can use Devmem");
+    // }
+    // else {
+    //     println!("@@@ can not use Devmem");
+    // }
+
+    
+
+    println!("@@@ partitions_mem_type is {:?}", partitions_mem_type);
+    println!("@@@ partitions_mem_type_revised is {:?}", partitions_mem_type_revised);
+
+
+    let (inner_rel_alloc, cached_build_tuples) = match partitions_mem_type {
+        MemType::DistributedNumaMem {..} => Allocator::mem_spill_alloc_fn(CacheSpillType::CacheAndSpill {
             cache_node,
             spill_node,
             page_type,
-        });
+        }),
+        _ => {
+            Allocator::mem_spill_alloc_fn(CacheSpillType::NoSpill(partitions_mem_type_revised.clone()))
+        }
+    };
+
     let mut inner_rel_partitions = PartitionedRelation::new(
         data.build_relation_key.len(),
         histogram_algorithm_fst.either(|cpu| cpu.into(), |gpu| gpu.into()),
         radix_bits.pass_radix_bits(RadixPass::First).unwrap(),
         max_chunks_1st,
-        inner_rel_alloc(cache_bytes_inner / mem::size_of::<Tuple<T, T>>()),
+        inner_rel_alloc(cache_bytes_inner / mem::size_of::<Tuple<T, T>>()), // (cache_bytes_inner / mem::size_of::<Tuple<T, T>>()) : cache_max_len. neglected when no spill
         Allocator::mem_alloc_fn(offsets_mem_type.clone()),
     );
 
-    let (outer_rel_alloc, cached_probe_tuples) =
-        Allocator::mem_spill_alloc_fn(CacheSpillType::CacheAndSpill {
+    let (outer_rel_alloc, cached_probe_tuples) = match partitions_mem_type {
+        MemType::DistributedNumaMem {..} => Allocator::mem_spill_alloc_fn(CacheSpillType::CacheAndSpill {
             cache_node,
             spill_node,
             page_type,
-        });
+        }),
+        _ => Allocator::mem_spill_alloc_fn(CacheSpillType::NoSpill(partitions_mem_type_revised.clone()))
+    };
+
     let mut outer_rel_partitions = PartitionedRelation::new(
         data.probe_relation_key.len(),
         histogram_algorithm_fst.either(|cpu| cpu.into(), |gpu| gpu.into()),

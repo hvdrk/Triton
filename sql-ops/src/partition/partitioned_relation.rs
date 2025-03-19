@@ -24,7 +24,7 @@ use std::ops::{Index, IndexMut};
 use std::slice::ChunksMut;
 
 /// Convert padding bytes into padding length for the type `T`
-fn padding_len<T: Sized>() -> u32 {
+pub fn padding_len<T: Sized>() -> u32 {
     crate::constants::PADDING_BYTES / mem::size_of::<T>() as u32
 }
 

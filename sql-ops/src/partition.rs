@@ -21,7 +21,7 @@ use std::convert::TryFrom;
 pub mod cpu_radix_partition;
 pub mod gpu_radix_partition;
 mod partition_input_chunk;
-mod partitioned_relation;
+pub mod partitioned_relation;
 
 // Export structs
 pub use partition_input_chunk::{RadixPartitionInputChunk, RadixPartitionInputChunkable};
@@ -47,7 +47,7 @@ pub enum HistogramAlgorithmType {
 
 /// Compute the fanout (i.e., the number of partitions) from the number of radix
 /// bits.
-fn fanout(radix_bits: u32) -> u32 {
+pub fn fanout(radix_bits: u32) -> u32 {
     1 << radix_bits
 }
 
