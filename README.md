@@ -4,6 +4,8 @@ Triton for PCIe
 ## Chainges
 
 
+Please check following documents
+
 
  * [Setup Guide](./docs/BuildGuide.pdf)
  * [Changes](./docs/PCIe.pdf)
