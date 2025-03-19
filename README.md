@@ -10,7 +10,54 @@ Please check following documents
  * [Build Guide](./docs/BuildGuide.pdf)
 
 
+## Commands
 
+to run triton code, use following command
+
+```
+export REL_SIZE=128
+export EXECUTION_STRATEGY="GpuTritonJoinTwoPass"
+export HASHING_SCHEME="BucketChaining"
+export HIST_ALOGRITHM_1="GpuChunked"
+export HIST_ALOGRITHM_2="GpuContiguous"
+export PARTITION_ALOGRITHM_1="GpuHSSWWCv4"
+export PARTITION_ALOGRITHM_2="GpuHSSWWCv4"
+export PARTITION_MEMTYPE="Numapinned"
+export REPEAT=2
+cargo run                                          \
+  --release                                        \
+  --package radix-join                             \
+  --                                               \
+  --execution-strategy "$EXECUTION_STRATEGY"        \
+  --hashing-scheme "$HASHING_SCHEME"                  \
+  --histogram-algorithm "$HIST_ALOGRITHM_1"             \
+  --histogram-algorithm-2nd "$HIST_ALOGRITHM_2"             \
+  --partition-algorithm "$PARTITION_ALOGRITHM_1"                   \
+  --partition-algorithm-2nd "$PARTITION_ALOGRITHM_2"                \
+  --radix-bits 7,11                                \
+  --page-type Huge2MB                      \
+  --dmem-buffer-size 8                             \
+  --threads 24                                     \
+  --device-id 2 \
+  --rel-mem-type Numapinned                    \
+  --inner-rel-location 0                           \
+  --outer-rel-location 0                           \
+  --partitions-mem-type "$PARTITION_MEMTYPE"             \
+  --partitions-location 0                          \
+  --partitions-location 0                          \
+  --data-set Custom                                \
+  --inner-rel-tuples `bc <<< "$REL_SIZE * 10^6"`         \
+  --outer-rel-tuples `bc <<< "$REL_SIZE * 10^6"`         \
+  --tuple-bytes Bytes16                            \
+  --repeat "$REPEAT"                                      \
+  --csv ${EXECUTION_STRATEGY}_${HASHING_SCHEME}_${HIST_ALOGRITHM_1}_${HIST_ALOGRITHM_2}_${PARTITION_ALOGRITHM_1}_${PARTITION_ALOGRITHM_2}_${PARTITION_MEMTYPE}_x${REPEAT}_${REL_SIZE}M.csv
+
+```
+The valid range of each radix bits is determined by dmem-buffer-size.
+
+In current system, each radix-bits can not exceed 12 when 8 bytes.
+
+Total radix bits should large enough to accomodate shared memory size.
 
 ## What is Project Triton?
 
