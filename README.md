@@ -1,7 +1,7 @@
 Triton for PCIe
 ==============
 
-## Chainges
+## Changes
 
 
 Please check following documents
