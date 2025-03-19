@@ -1,12 +1,14 @@
 Triton for PCIe
 ==============
 
-## Chaingelog
+## Chainges
+
+
 
  * [Setup Guide](./docs/BuildGuide.pdf)
  * [Changes](./docs/PCIe.pdf)
 
-followings
+
 
 ## What is Project Triton?
 
